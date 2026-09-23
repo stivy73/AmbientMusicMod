@@ -138,6 +138,7 @@
     <string name="recognition_error_title">Recognition Failed</string>
     <string name="recognition_error_content_shizuku">Failed to connect to Shizuku service</string>
     <string name="recognition_error_content_timeout">Timed out waiting for response</string>
+    <string name="recognition_error_content_on_demand_timeout">On Demand did not receive a response from Now Playing or Sound Search. Check the Google App setup and collect the RecognitionRepository log if this persists.</string>
     <string name="recognition_error_api_version">Incompatible Now Playing version, please update Now Playing from the Updates page</string>
     <string name="recognition_error_needs_root">Recognition on this device requires root, please read the FAQ for more info</string>
     <string name="recognition_error_disabled">Recognition is disabled</string>

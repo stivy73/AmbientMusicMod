@@ -473,6 +473,7 @@ class RecognitionFragment: BoundDialogFragment<FragmentRecognitionBinding>(Fragm
         val reasonContent = when(result.type){
             ErrorReason.SHIZUKU_ERROR -> R.string.recognition_error_content_shizuku
             ErrorReason.TIMEOUT -> R.string.recognition_error_content_timeout
+            ErrorReason.ON_DEMAND_TIMEOUT -> R.string.recognition_error_content_on_demand_timeout
             ErrorReason.API_INCOMPATIBLE -> R.string.recognition_error_api_version
             ErrorReason.NEEDS_ROOT -> R.string.recognition_error_needs_root
             ErrorReason.DISABLED -> R.string.recognition_error_disabled

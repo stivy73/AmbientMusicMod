@@ -5,6 +5,7 @@ import android.database.ContentObserver
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.RemoteException
 import android.util.Log
 import com.google.audio.ambientmusic.HistoryData
 import com.kieronquinn.app.ambientmusicmod.repositories.RecognitionRepository.RecognitionState
@@ -15,8 +16,6 @@ import com.kieronquinn.app.ambientmusicmod.utils.extensions.safeRegisterContentO
 import com.kieronquinn.app.pixelambientmusic.IRecognitionCallback
 import com.kieronquinn.app.pixelambientmusic.IRecognitionService
 import com.kieronquinn.app.pixelambientmusic.model.*
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -24,6 +23,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 
@@ -40,7 +40,7 @@ interface RecognitionRepository {
         data class Failed(val recognitionFailure: RecognitionFailure): RecognitionState()
 
         enum class ErrorReason {
-            SHIZUKU_ERROR, TIMEOUT, API_INCOMPATIBLE, NEEDS_ROOT, DISABLED
+            SHIZUKU_ERROR, TIMEOUT, ON_DEMAND_TIMEOUT, API_INCOMPATIBLE, NEEDS_ROOT, DISABLED
         }
     }
 
@@ -63,7 +63,8 @@ class RecognitionRepositoryImpl(
 ): RecognitionRepository, KoinComponent {
 
     companion object {
-        private const val RECOGNITION_CALLBACK_TIMEOUT = 2500L
+        private const val START_TIMEOUT = 2500L
+        private const val TOTAL_RECOGNITION_TIMEOUT = 120_000L
         private val URI_HISTORY = Uri.Builder()
             .scheme("content")
             .authority("com.google.android.as.pam.ambientmusic.historyprovider")
@@ -100,55 +101,90 @@ class RecognitionRepositoryImpl(
         if(settings !is SettingsState.Available || !settings.mainEnabled){
             trySend(RecognitionState.Error(ErrorReason.DISABLED))
             close()
+            return@callbackFlow
         }
-        var hasStarted = false
-        async {
-            delay(RECOGNITION_CALLBACK_TIMEOUT)
-            if(!hasStarted){
-                trySend(RecognitionState.Error(ErrorReason.TIMEOUT))
+        val hasStarted = AtomicBoolean(false)
+        val isFinished = AtomicBoolean(false)
+        val timeoutReason = if(source == RecognitionSource.ON_DEMAND)
+            ErrorReason.ON_DEMAND_TIMEOUT else ErrorReason.TIMEOUT
+        launch {
+            delay(START_TIMEOUT)
+            if(!hasStarted.get() && isFinished.compareAndSet(false, true)){
+                Log.w("RecognitionRepository", "Recognition did not start: $source")
+                trySend(RecognitionState.Error(timeoutReason))
+                close()
+            }
+        }
+        launch {
+            delay(TOTAL_RECOGNITION_TIMEOUT)
+            if(isFinished.compareAndSet(false, true)){
+                Log.w("RecognitionRepository", "Recognition exceeded total timeout: $source")
+                trySend(RecognitionState.Error(timeoutReason))
                 close()
             }
         }
         val callback = object: IRecognitionCallback.Stub() {
             override fun onRecordingStarted() {
-                hasStarted = true
-                trySend(RecognitionState.Recording(source))
+                hasStarted.set(true)
+                if(!isFinished.get()) trySend(RecognitionState.Recording(source))
             }
 
             override fun onRecognitionStarted() {
-                hasStarted = true
-                trySend(RecognitionState.Recognising(source))
+                hasStarted.set(true)
+                if(!isFinished.get()) trySend(RecognitionState.Recognising(source))
             }
 
             override fun onRecognitionSucceeded(
                 result: RecognitionResult,
                 metadata: RecognitionMetadata?
             ) {
-                hasStarted = true
-                trySend(RecognitionState.Recognised(result, metadata))
-                close()
+                hasStarted.set(true)
+                if(isFinished.compareAndSet(false, true)) {
+                    trySend(RecognitionState.Recognised(result, metadata))
+                    close()
+                }
             }
 
             override fun onRecognitionFailed(result: RecognitionFailure) {
-                hasStarted = true
-                trySend(RecognitionState.Failed(result))
-                close()
+                hasStarted.set(true)
+                if(isFinished.compareAndSet(false, true)) {
+                    trySend(RecognitionState.Failed(result))
+                    close()
+                }
             }
         }
         val metadata = RecognitionCallbackMetadata(source, includeAudio)
         val service = getService() ?: run {
-            hasStarted = true
+            isFinished.set(true)
             trySend(RecognitionState.Error(ErrorReason.API_INCOMPATIBLE))
             close()
             return@callbackFlow
         }
-        val callbackId = service.addRecognitionCallback(callback, metadata)
-        requestBlock(service)
+        val callbackId = try {
+            service.addRecognitionCallback(callback, metadata)
+        }catch (e: RemoteException){
+            isFinished.set(true)
+            Log.w("RecognitionRepository", "Unable to register recognition callback", e)
+            trySend(RecognitionState.Error(ErrorReason.API_INCOMPATIBLE))
+            close()
+            return@callbackFlow
+        }
+        if(!isFinished.get()) {
+            try {
+                requestBlock(service)
+            }catch (e: RemoteException){
+                isFinished.set(true)
+                Log.w("RecognitionRepository", "Unable to start recognition: $source", e)
+                trySend(RecognitionState.Error(ErrorReason.API_INCOMPATIBLE))
+                close()
+            }
+        }
         awaitClose {
             callbackId?.let {
-                //We need to disconnect regardless, even if the flow scope has gone
-                GlobalScope.launch {
-                    getService()?.removeRecognitionCallback(it)
+                try {
+                    service.removeRecognitionCallback(it)
+                }catch (e: RemoteException){
+                    Log.w("RecognitionRepository", "Unable to remove recognition callback", e)
                 }
             }
         }
