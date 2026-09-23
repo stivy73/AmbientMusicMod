@@ -193,6 +193,7 @@ class LockscreenOverlayAccessibilityService : LifecycleAccessibilityService() {
 
     override fun onDestroy() {
         MESSAGE_HANDLER = null
+        accessibility.onAccessibilityStopped()
         super.onDestroy()
     }
 
