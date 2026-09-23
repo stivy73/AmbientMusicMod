@@ -14,18 +14,15 @@ import com.kieronquinn.app.ambientmusicmod.repositories.ShizukuServiceRepository
 import com.kieronquinn.app.ambientmusicmod.repositories.ShizukuServiceRepository.ShizukuServiceResponse.FailureReason
 import com.kieronquinn.app.ambientmusicmod.service.ShizukuService
 import com.kieronquinn.app.ambientmusicmod.utils.extensions.suspendCancellableCoroutineWithTimeout
-import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import rikka.shizuku.Shizuku
 import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 
 interface ShizukuServiceRepository {
 
@@ -76,6 +73,8 @@ class ShizukuServiceRepositoryImpl(
         private const val SHIZUKU_TIMEOUT = 2500L
     }
 
+    private enum class PermissionResult { GRANTED, DENIED, NO_BINDER }
+
     private val shizukuComponent by lazy {
         ComponentName(context, ShizukuService::class.java)
     }
@@ -89,13 +88,12 @@ class ShizukuServiceRepositoryImpl(
         }
     }
 
-    private var serviceConnection: ServiceConnection? = null
-    private var service: IShellProxy? = null
+    @Volatile private var serviceConnection: ServiceConnection? = null
+    @Volatile private var service: IShellProxy? = null
     private val serviceLock = Mutex()
     private val runLock = Mutex()
-    private val scope = MainScope()
 
-    private val onConnectionChange = MutableStateFlow(System.currentTimeMillis())
+    private val onConnectionChange = MutableStateFlow(0)
 
     override val isReady = onConnectionChange.map {
         assertReady()
@@ -117,31 +115,61 @@ class ShizukuServiceRepositoryImpl(
     ): ShizukuServiceResponse<T> = runLock.withLock {
         service?.let {
             if(!it.safePing()){
-                //Service has disconnected or died
-                service = null
-                serviceConnection = null
+                clearService()
                 return@let
             }
-            return ShizukuServiceResponse.Success(block(it))
+            return runOnService(it, block)
         }
         if(awaitShizuku() != true)
             return ShizukuServiceResponse.Failed(FailureReason.NO_BINDER)
-        if(!requestPermission())
-            return ShizukuServiceResponse.Failed(FailureReason.PERMISSION_DENIED)
-        return ShizukuServiceResponse.Success(block(getService()))
+        val permission = requestPermission()
+        if(permission != null) return ShizukuServiceResponse.Failed(permission)
+        val connected = getService() ?: return ShizukuServiceResponse.Failed(FailureReason.NO_BINDER)
+        return runOnService(connected, block)
     }
 
     override fun <T> runWithServiceIfAvailable(
         block: (IShellProxy) -> T
     ): ShizukuServiceResponse<T> {
         return service?.let {
-            ShizukuServiceResponse.Success(block(it))
+            if(!it.safePing()) {
+                clearService()
+                ShizukuServiceResponse.Failed(FailureReason.NOT_AVAILABLE)
+            }else runOnService(it, block)
         } ?: ShizukuServiceResponse.Failed(FailureReason.NOT_AVAILABLE)
     }
 
     override fun disconnect() {
-        serviceConnection?.let {
-            Shizuku.unbindUserService(userServiceArgs, it, true)
+        clearService()
+    }
+
+    private fun clearService() {
+        val connection = serviceConnection
+        service = null
+        serviceConnection = null
+        onConnectionChange.update { it + 1 }
+        connection?.let {
+            try {
+                Shizuku.unbindUserService(userServiceArgs, it, true)
+            }catch (_: IllegalStateException){
+                //Shizuku has already detached.
+            }catch (_: RemoteException){
+                //The binder has already died.
+            }catch (_: IllegalArgumentException){
+                //Binding did not complete before the client detached.
+            }
+        }
+    }
+
+    private fun <T> runOnService(
+        connected: IShellProxy,
+        block: (IShellProxy) -> T
+    ): ShizukuServiceResponse<T> {
+        return try {
+            ShizukuServiceResponse.Success(block(connected))
+        }catch (_: RemoteException){
+            clearService()
+            ShizukuServiceResponse.Failed(FailureReason.NO_BINDER)
         }
     }
 
@@ -169,64 +197,91 @@ class ShizukuServiceRepositoryImpl(
         }
     }
 
-    private suspend fun requestPermission() = suspendCancellableCoroutine<Boolean> {
-        var hasResumed = false
-        if(Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-            if(!hasResumed) {
-                hasResumed = true
-                it.resume(true) //Already granted
-            }
-            return@suspendCancellableCoroutine
+    private suspend fun requestPermission(): FailureReason? {
+        //pingBinder and checkSelfPermission are separate calls; the client can detach between them.
+        val granted = try {
+            if(!Shizuku.pingBinder()) return FailureReason.NO_BINDER
+            Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        }catch (_: IllegalStateException){
+            return FailureReason.NO_BINDER
+        }catch (_: RemoteException){
+            return FailureReason.NO_BINDER
         }
+        if(granted) return null
+        return when(requestPermissionResult()) {
+            PermissionResult.GRANTED -> null
+            PermissionResult.DENIED -> FailureReason.PERMISSION_DENIED
+            PermissionResult.NO_BINDER -> FailureReason.NO_BINDER
+            null -> FailureReason.NO_BINDER
+        }
+    }
+
+    private suspend fun requestPermissionResult() = suspendCancellableCoroutineWithTimeout<PermissionResult>(
+        SHIZUKU_TIMEOUT
+    ) { continuation ->
         val listener = object: Shizuku.OnRequestPermissionResultListener {
             override fun onRequestPermissionResult(requestCode: Int, grantResult: Int) {
                 if(requestCode != SHIZUKU_PERMISSION_REQUEST_CODE) return
                 Shizuku.removeRequestPermissionResultListener(this)
-                if(!hasResumed) {
-                    hasResumed = true
-                    it.resume(grantResult == PackageManager.PERMISSION_GRANTED)
-                }
+                if(continuation.isActive) continuation.resume(
+                    if(grantResult == PackageManager.PERMISSION_GRANTED) PermissionResult.GRANTED
+                    else PermissionResult.DENIED
+                )
             }
         }
         Shizuku.addRequestPermissionResultListener(listener)
-        Shizuku.requestPermission(SHIZUKU_PERMISSION_REQUEST_CODE)
-        it.invokeOnCancellation {
+        continuation.invokeOnCancellation {
             Shizuku.removeRequestPermissionResultListener(listener)
+        }
+        try {
+            Shizuku.requestPermission(SHIZUKU_PERMISSION_REQUEST_CODE)
+        }catch (_: IllegalStateException){
+            Shizuku.removeRequestPermissionResultListener(listener)
+            if(continuation.isActive) continuation.resume(PermissionResult.NO_BINDER)
+        }catch (_: RemoteException){
+            Shizuku.removeRequestPermissionResultListener(listener)
+            if(continuation.isActive) continuation.resume(PermissionResult.NO_BINDER)
         }
     }
 
     private suspend fun getService() = serviceLock.withLock {
-        suspendCoroutine<IShellProxy> {
-            var hasResumed = false
+        suspendCancellableCoroutineWithTimeout<IShellProxy?>(SHIZUKU_TIMEOUT) { continuation ->
             val serviceConnection = object: ServiceConnection {
                 override fun onServiceConnected(component: ComponentName, binder: IBinder) {
+                    if(!continuation.isActive || !binder.isBinderAlive) return
                     serviceConnection = this
                     val service = IShellProxy.Stub.asInterface(binder)
                     this@ShizukuServiceRepositoryImpl.service = service
-                    scope.launch {
-                        onConnectionChange.emit(System.currentTimeMillis())
-                    }
-                    if(!hasResumed){
-                        hasResumed = true
-                        it.resume(service)
-                    }
+                    onConnectionChange.update { it + 1 }
+                    continuation.resume(service)
                 }
 
                 override fun onServiceDisconnected(component: ComponentName) {
-                    serviceConnection = null
-                    service = null
-                    scope.launch {
-                        onConnectionChange.emit(System.currentTimeMillis())
-                    }
+                    if(this@ShizukuServiceRepositoryImpl.serviceConnection === this) clearService()
+                    if(continuation.isActive) continuation.resume(null)
                 }
             }
-            Shizuku.bindUserService(userServiceArgs, serviceConnection)
+            this@ShizukuServiceRepositoryImpl.serviceConnection = serviceConnection
+            continuation.invokeOnCancellation {
+                if(this@ShizukuServiceRepositoryImpl.serviceConnection === serviceConnection) {
+                    clearService()
+                }
+            }
+            try {
+                Shizuku.bindUserService(userServiceArgs, serviceConnection)
+            }catch (_: IllegalStateException){
+                clearService()
+                if(continuation.isActive) continuation.resume(null)
+            }catch (_: RemoteException){
+                clearService()
+                if(continuation.isActive) continuation.resume(null)
+            }
         }
     }
 
     private fun IShellProxy.safePing(): Boolean {
         return try {
-            ping()
+            asBinder().isBinderAlive && ping()
         }catch (e: RemoteException){
             false
         }
