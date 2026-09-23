@@ -93,6 +93,15 @@ class OnDemandFragment: BaseSettingsFragment(), BackAvailable {
                 viewModel::onBannerButtonClicked,
                 viewModel::onBannerDisableButtonClicked
             )
+            GoogleAppState.NEEDS_SERVICE -> OnDemandSettingsItem.Banner(
+                getString(R.string.on_demand_banner_needs_service_title),
+                getString(R.string.on_demand_banner_needs_service_content),
+                BannerAttentionLevel.HIGH,
+                BannerButton(R.string.on_demand_banner_unsupported_button, faqEvent),
+                onDemandEnabled,
+                viewModel::onBannerButtonClicked,
+                viewModel::onBannerDisableButtonClicked
+            )
             else -> null
         }
         if(banner != null){

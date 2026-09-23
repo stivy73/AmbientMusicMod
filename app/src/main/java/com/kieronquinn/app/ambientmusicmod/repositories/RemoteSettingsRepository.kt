@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.ComponentName
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioManager
@@ -13,6 +14,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.content.pm.PackageManager
 import com.google.gson.Gson
 import com.kieronquinn.app.ambientmusicmod.IMicrophoneDisabledStateCallback
 import com.kieronquinn.app.ambientmusicmod.PACKAGE_NAME_GSB
@@ -83,6 +85,9 @@ interface RemoteSettingsRepository {
          *  The system is set up correctly, but the correct version of GSA needs installing
          */
         NEEDS_SPLIT,
+
+        /** The expected Sound Search service is absent or disabled in the installed Google App. */
+        NEEDS_SERVICE,
 
         /**
          *  The system is not set up to handle On Demand, an overlay will be required
@@ -244,6 +249,17 @@ class RemoteSettingsRepositoryImpl(
         val splits = packageManager.getSplits(PACKAGE_NAME_GSB)
         //The QSB app needs Sound Search to be installed, this has to be done manually
         if(!splits.contains("sound_search_fingerprinter_split")) return GoogleAppState.NEEDS_SPLIT
+        val soundSearchService = ComponentName(
+            PACKAGE_NAME_GSB,
+            "com.google.android.apps.search.soundsearch.service.SoundSearchService"
+        )
+        val serviceAvailable = try {
+            val info = packageManager.getServiceInfo(soundSearchService, 0)
+            info.enabled && info.applicationInfo.enabled
+        }catch (_: PackageManager.NameNotFoundException){
+            false
+        }
+        if(!serviceAvailable) return GoogleAppState.NEEDS_SERVICE
         return GoogleAppState.SUPPORTED
     }
 
