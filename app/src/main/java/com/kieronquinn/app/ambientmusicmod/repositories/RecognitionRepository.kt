@@ -107,7 +107,7 @@ class RecognitionRepositoryImpl(
         val isFinished = AtomicBoolean(false)
         val timeoutReason = if(source == RecognitionSource.ON_DEMAND)
             ErrorReason.ON_DEMAND_TIMEOUT else ErrorReason.TIMEOUT
-        launch {
+        val startTimeout = launch {
             delay(START_TIMEOUT)
             if(!hasStarted.get() && isFinished.compareAndSet(false, true)){
                 Log.w("RecognitionRepository", "Recognition did not start: $source")
@@ -115,7 +115,7 @@ class RecognitionRepositoryImpl(
                 close()
             }
         }
-        launch {
+        val totalTimeout = launch {
             delay(TOTAL_RECOGNITION_TIMEOUT)
             if(isFinished.compareAndSet(false, true)){
                 Log.w("RecognitionRepository", "Recognition exceeded total timeout: $source")
@@ -156,6 +156,8 @@ class RecognitionRepositoryImpl(
         val metadata = RecognitionCallbackMetadata(source, includeAudio)
         val service = getService() ?: run {
             isFinished.set(true)
+            startTimeout.cancel()
+            totalTimeout.cancel()
             trySend(RecognitionState.Error(ErrorReason.API_INCOMPATIBLE))
             close()
             return@callbackFlow
@@ -164,6 +166,8 @@ class RecognitionRepositoryImpl(
             service.addRecognitionCallback(callback, metadata)
         }catch (e: RemoteException){
             isFinished.set(true)
+            startTimeout.cancel()
+            totalTimeout.cancel()
             Log.w("RecognitionRepository", "Unable to register recognition callback", e)
             trySend(RecognitionState.Error(ErrorReason.API_INCOMPATIBLE))
             close()
@@ -180,6 +184,9 @@ class RecognitionRepositoryImpl(
             }
         }
         awaitClose {
+            isFinished.set(true)
+            startTimeout.cancel()
+            totalTimeout.cancel()
             callbackId?.let {
                 try {
                     service.removeRecognitionCallback(it)
