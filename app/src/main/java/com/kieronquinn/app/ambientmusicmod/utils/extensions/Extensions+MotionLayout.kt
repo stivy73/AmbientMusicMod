@@ -4,8 +4,8 @@ import androidx.annotation.IdRes
 import androidx.constraintlayout.motion.widget.MotionLayout
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 
 /**
  *  Emits a triple of (startId, endId, progress) of a transition
@@ -44,7 +44,7 @@ fun MotionLayout.progressCallback() = callbackFlow {
     }
     addTransitionListener(callback)
     awaitClose {
-        removeTransitionListener(null)
+        removeTransitionListener(callback)
     }
 }
 
@@ -82,19 +82,22 @@ fun MotionLayout.onComplete() = callbackFlow {
     }
     addTransitionListener(callback)
     awaitClose {
-        removeTransitionListener(null)
+        removeTransitionListener(callback)
     }
 }
 
-suspend fun MotionLayout.runTransition(@IdRes id: Int) = suspendCoroutine<Boolean> {
+suspend fun MotionLayout.runTransition(@IdRes id: Int) = suspendCancellableCoroutine<Boolean> {
     if(getTransition(id) == null) {
         it.resume(false)
+        return@suspendCancellableCoroutine
     }
-    var hasResumed = false
     setTransition(id)
+    if(progress == 1f) {
+        it.resume(true)
+        return@suspendCancellableCoroutine
+    }
     transitionToEnd {
-        if(!hasResumed) {
-            hasResumed = true
+        if(it.isActive) {
             it.resume(true)
         }
     }
