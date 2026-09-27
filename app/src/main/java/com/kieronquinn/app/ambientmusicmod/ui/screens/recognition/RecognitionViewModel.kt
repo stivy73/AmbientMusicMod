@@ -240,8 +240,10 @@ class RecognitionViewModelImpl(
         widgetRepository.notifyRecognitionState(state)
         return when(state){
             is RecognitionState.Recording -> {
+                // Replayed progress must not cancel the collector or discard its final result.
+                if(this.state.value is State.Recording || this.state.value is State.Recognising) return false
                 if(this.state.value !is State.StartRecognising) {
-                    return this.state.value !is State.Recording //Prevent double recording cancelling
+                    return true
                 }
                 this.state.emit(
                     State.Recording(R.id.loading_to_recording, System.currentTimeMillis(), source)
@@ -250,11 +252,15 @@ class RecognitionViewModelImpl(
             }
             is RecognitionState.Recognising -> {
                 if(source == RecognitionSource.NNFP) {
-                    if (this.state.value !is State.Recording) {
-                        return this.state.value !is State.Recognising //Prevent double recognising cancelling
+                    val route = when(this.state.value) {
+                        is State.StartRecognising -> R.id.loading_to_recognising
+                        is State.Recording -> R.id.recording_to_recognising
+                        is State.Recognising -> return false
+                        else -> return true
                     }
-                    this.state.emit(State.Recognising(R.id.recording_to_recognising, source))
+                    this.state.emit(State.Recognising(route, source))
                 }else{
+                    if(this.state.value is State.Recording) return false
                     if(this.state.value !is State.StartRecognising) return true
                     this.state.emit(
                         State.Recording(R.id.loading_to_recording, System.currentTimeMillis(), source)
@@ -265,57 +271,24 @@ class RecognitionViewModelImpl(
             is RecognitionState.Recognised -> {
                 //Send recognition to service
                 AmbientMusicModForegroundService.sendManualRecognition(state)
-                if(source == RecognitionSource.NNFP) {
-                    if (this.state.value !is State.Recognising) return true
-                    val result = RecogniseResult.Success(
-                        state.recognitionResult,
-                        state.metadata
-                    )
-                    this.state.emit(
-                        State.RecognisingIcon(
-                            R.id.recognising_to_recognising_icon,
-                            result
-                        )
-                    )
-                }else{
-                    if(this.state.value !is State.Recording) return true
-                    val result = RecogniseResult.Success(state.recognitionResult, state.metadata)
-                    this.state.emit(
-                        State.RecognisingIcon(R.id.recording_to_recognising_icon, result)
-                    )
-                }
+                showResult(RecogniseResult.Success(state.recognitionResult, state.metadata))
                 true
             }
             is RecognitionState.Failed -> {
-                if(source == RecognitionSource.NNFP){
-                    if(this.state.value !is State.Recognising) return true
-                    val result = RecogniseResult.Failed(state.recognitionFailure)
-                    this.state.emit(
-                        State.RecognisingIcon(R.id.recognising_to_recognising_icon, result)
-                    )
-                }else{
-                    if(this.state.value !is State.Recording) return true
-                    val result = RecogniseResult.Failed(state.recognitionFailure)
-                    this.state.emit(
-                        State.RecognisingIcon(R.id.recording_to_recognising_icon, result)
-                    )
-                }
+                showResult(RecogniseResult.Failed(state.recognitionFailure))
                 true
             }
             is RecognitionState.Error -> {
-                val result = RecogniseResult.Error(state.errorReason, source)
-                val route = when(this.state.value){
-                    is State.StartRecognising -> R.id.loading_to_recognising_icon
-                    is State.Recording -> R.id.recording_to_recognising_icon
-                    is State.Recognising -> R.id.recognising_to_recognising_icon
-                    else -> return true
-                }
-                this.state.emit(
-                    State.RecognisingIcon(route, result)
-                )
+                showResult(RecogniseResult.Error(state.errorReason, source))
                 true
             }
         }
+    }
+
+    private suspend fun showResult(result: RecogniseResult) {
+        // A skipped recording or an immediate backend failure need not enter Recognising.
+        val route = state.value.recognitionResultTransition() ?: return
+        state.emit(State.RecognisingIcon(route, result))
     }
 
     override fun onPlaybackPlayStopClicked() {

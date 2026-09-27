@@ -918,6 +918,10 @@
         </KeyFrameSet>
     </Transition>
     <Transition
+        android:id="@+id/loading_to_recognising"
+        app:constraintSetStart="@+id/loading"
+        app:constraintSetEnd="@+id/recognising" />
+    <Transition
         android:id="@+id/recording_to_recognising"
         app:constraintSetStart="@+id/recording"
         app:constraintSetEnd="@+id/recognising">
