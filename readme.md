@@ -4,6 +4,10 @@
 
 Ambient Music Mod is a Shizuku/Sui app that ports Now Playing from Pixels to other Android devices. 
 
+## Personal fork: Android modernization
+
+The [`android-modernization`](https://github.com/stivy73/AmbientMusicMod/tree/android-modernization) branch of this personal fork contains targeted accessibility, Shizuku and recognition reliability fixes. It is developed alongside the matching [NowPlaying fork](https://github.com/stivy73/NowPlaying/tree/android-modernization); builds of both apps must use the same signing key. The [recognition fix report](docs/recognition-reliability-2026-09-27.md) records changes, build and device tests, and remaining limits. Native NowPlaying/Pine stability on Android 16 is not yet proven over extended use.
+
 ## Requirements
 
 - Android device running Android 9.0 or above (11+ recommended).
