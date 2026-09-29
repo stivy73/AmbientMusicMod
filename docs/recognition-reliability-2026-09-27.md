@@ -76,3 +76,28 @@ https://github.com/LSPosed/LSPlant/issues/179
 
 These checks do not replace the broader accessibility, Shizuku, reboot, overlay and
 widget regression checklist from the modernization work.
+
+## Now Playing availability on HyperOS — 2026-09-29
+
+On a Xiaomi HyperOS device, AMM showed "Now Playing Error" even though the
+installed NowPlaying advertised a compatible API version and AMM held its signature
+permission. A device test confirmed that its settings-provider query returned null.
+Logcat then showed HyperOS `WakePathChecker` rejecting background startup of both
+NowPlaying's settings provider and recognition service. This is an OEM startup policy,
+not evidence of an APK version mismatch. Autostart for NowPlaying was observed enabled
+later; the same provider query and service binding then passed, and AMM loaded the
+Now Playing page. The transition itself was not instrumented, so the exact setting
+change or event that lifted the restriction is not established.
+
+AMM now reports an unavailable settings connection rather than asserting a version
+mismatch, with a HyperOS/MIUI Autostart check as a device-specific suggestion.
+Separately, a captured AMM crash showed `IllegalArgumentException: Service not
+registered` when a rejected `bindService` attempt timed out and cancellation called
+`unbindService` on that unregistered connection. Binding now tracks registration;
+an unsuccessful bind is never unbound, and cancellation during an in-flight bind
+unbinds exactly once if registration subsequently succeeds. Instrumentation tests
+exercise both races, plus provider and real-service connectivity on the device.
+
+The current Now Playing page no longer shows the connection error, but displays
+"Downloading song database". Database completion, recognition after reboot, and
+cold-start behavior under HyperOS still require separate device verification.

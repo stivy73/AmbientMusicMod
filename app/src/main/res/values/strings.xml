@@ -60,8 +60,8 @@
     <string name="nowplaying_title">Now Playing</string>
     <string name="now_playing_error_shizuku">Failed to connect to Shizuku</string>
     <string name="now_playing_error_shizuku_subtitle">Make sure it has been started and try again</string>
-    <string name="now_playing_error_api">Now Playing Error</string>
-    <string name="now_playing_error_api_subtitle">Either Now Playing has been uninstalled or the version is not compatible with this version of Ambient Music Mod, please install/update it from the Updates page</string>
+    <string name="now_playing_error_api">Now Playing unavailable</string>
+    <string name="now_playing_error_api_subtitle">Ambient Music Mod cannot read Now Playing settings. Check that Now Playing is installed and allowed to start in the background. On HyperOS/MIUI, enable Autostart for Now Playing in system settings, then reopen this app.</string>
     <string name="now_playing_error_generic">An Error Occurred</string>
     <string name="now_playing_error_generic_subtitle">Please restart Ambient Music Mod and try again</string>
     <string name="item_nowplaying_header_preview">Song • Artist</string>
